@@ -23,6 +23,7 @@ Install via the Omarchy Package Repository via the `omawrite` package. It's inst
 - `Ctrl+P` opens the system print dialog.
 - `Ctrl+N` opens a new Omawrite window.
 - `Ctrl+T` opens a new tab.
+- `Ctrl+Tab` switches to the next tab, and `Ctrl+Shift+Tab` switches to the previous tab.
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
 - `Super+F` toggles fullscreen. Qt maps this key as `Meta+F`.
 - `Ctrl+F` searches the document. Use `Enter` or `Ctrl+G` for the next match and `Shift+Enter` for the previous match.
