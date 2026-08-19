@@ -16,9 +16,10 @@
 
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("omawrite"));
-    app.setDesktopFileName(QStringLiteral("omawrite"));
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite")));
+    app.setApplicationName(QStringLiteral("omawrite-notepad"));
+    app.setApplicationDisplayName(QStringLiteral("Notepad"));
+    app.setDesktopFileName(QStringLiteral("omawrite-notepad"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite-notepad")));
 
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/iAWriterMonoS-Regular.ttf"));
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/iAWriterMonoS-Italic.ttf"));

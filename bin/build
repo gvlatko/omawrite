@@ -21,4 +21,4 @@ cd "$BUILD_DIR"
 "$QMAKE" "$ROOT/omawrite.pro"
 make -j"$JOBS"
 
-echo "Built $BUILD_DIR/omawrite"
+echo "Built $BUILD_DIR/omawrite-notepad"

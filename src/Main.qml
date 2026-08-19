@@ -14,7 +14,7 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 520
     visible: true
-    title: (win.activeBackend && win.activeBackend.modified ? "* " : "") + (win.activeBackend ? win.activeBackend.fileName : "Untitled.md") + " - Omawrite"
+    title: (win.activeBackend && win.activeBackend.modified ? "* " : "") + (win.activeBackend ? win.activeBackend.fileName : "Untitled.md") + " - Notepad"
 
     readonly property bool darkMode: backend.darkMode
     readonly property color pageColor: backend.themeBackground
