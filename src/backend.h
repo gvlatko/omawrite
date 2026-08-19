@@ -62,6 +62,15 @@ public:
     Q_INVOKABLE void saveAs(const QUrl &url);
     Q_INVOKABLE void fileDialogCanceled();
     Q_INVOKABLE void discardRecovery();
+    Q_INVOKABLE bool isEmptyUntitled() const;
+    Q_INVOKABLE QString documentText() const;
+    Q_INVOKABLE void updateSessionText(const QString &text);
+    Q_INVOKABLE QVariantMap sessionEntry() const;
+    Q_INVOKABLE QVariantMap sessionEntryForText(const QString &text) const;
+    Q_INVOKABLE void restoreSessionEntry(const QVariantMap &entry);
+    Q_INVOKABLE QVariantList restoreSessionTabs() const;
+    Q_INVOKABLE int restoreSessionActiveIndex() const;
+    Q_INVOKABLE void saveSessionTabs(const QVariantList &entries, int activeIndex);
     Q_INVOKABLE void reloadFromDisk();
     Q_INVOKABLE void keepExternalVersion();
     Q_INVOKABLE void printDocument();
@@ -130,6 +139,7 @@ private:
     QPointer<QWindow> m_parentWindow;
     QPointer<MarkdownHighlighter> m_highlighter;
     QString m_lastDocumentText;
+    QString m_sessionText;
     QByteArray m_lastKnownFileContents;
     bool m_hasKnownFileContents = false;
     QString m_recoveryPath;

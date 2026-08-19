@@ -4,6 +4,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickStyle>
+#include <qqml.h>
 
 #include "backend.h"
 #include "markdownhighlighter.h"
@@ -14,7 +15,10 @@ class OmawriteTest : public QObject {
 private slots:
     void initTestCase() {
         QVERIFY(m_settingsDirectory.isValid());
+        QVERIFY(m_dataDirectory.isValid());
+        QVERIFY(qputenv("XDG_DATA_HOME", m_dataDirectory.path().toUtf8()));
         QQuickStyle::setStyle(QStringLiteral("Material"));
+        qmlRegisterType<Backend>("Omawrite", 1, 0, "DocumentBackend");
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                            m_settingsDirectory.path());
@@ -169,12 +173,15 @@ private slots:
         Backend backend;
         QQmlEngine engine;
         engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        engine.rootContext()->setContextProperty(QStringLiteral("initialSessionTabs"), QVariantList());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialOpenUrl"), QUrl());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialActiveTabIndex"), 0);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
         QVERIFY2(window, qPrintable(component.errorString()));
 
-        QVERIFY(window->findChild<QObject *>(QStringLiteral("sourceEditor")));
+        QTRY_VERIFY(window->property("activeEditor").value<QObject *>());
         QVERIFY(!window->findChild<QObject *>(QStringLiteral("renderedPreview")));
         QVERIFY(!window->findChild<QObject *>(QStringLiteral("modeToggle")));
 
@@ -183,11 +190,15 @@ private slots:
         QVERIFY(saveButton);
         QVERIFY(openButton);
 
-        QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
+        Backend *activeBackend = qobject_cast<Backend *>(
+            window->property("activeBackend").value<QObject *>());
+        QVERIFY(activeBackend);
+
+        QSignalSpy saveDialogSpy(activeBackend, &Backend::saveDialogRequested);
         QVERIFY(QMetaObject::invokeMethod(saveButton, "clicked"));
         QCOMPARE(saveDialogSpy.count(), 1);
 
-        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
+        QSignalSpy openDialogSpy(activeBackend, &Backend::openDialogRequested);
         QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
         QCOMPARE(openDialogSpy.count(), 1);
     }
@@ -199,13 +210,16 @@ private slots:
         Backend backend;
         QQmlEngine engine;
         engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        engine.rootContext()->setContextProperty(QStringLiteral("initialSessionTabs"), QVariantList());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialOpenUrl"), QUrl());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialActiveTabIndex"), 0);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
         QVERIFY2(window, qPrintable(component.errorString()));
 
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
+        QObject *editor = nullptr;
+        QTRY_VERIFY(editor = window->property("activeEditor").value<QObject *>());
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 20);
 
         // `omarchy display text size 16` sets the GNOME factor to 16/12.
@@ -216,6 +230,118 @@ private slots:
         backend.setTextScale(9.0 / 12.0);
         QCOMPARE(window->property("editorFontPixelSize").toInt(), 15);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 15);
+    }
+
+    void persistsTabSessionLayout() {
+        QTemporaryDir files;
+        QVERIFY(files.isValid());
+        const QString path = files.filePath(QStringLiteral("saved.md"));
+        QFile savedFile(path);
+        QVERIFY(savedFile.open(QIODevice::WriteOnly | QIODevice::Text));
+        QCOMPARE(savedFile.write("from disk"), qint64(9));
+        savedFile.close();
+
+        Backend store;
+        QVariantList entries;
+        entries << QVariantMap{{QStringLiteral("empty"), true}};
+        entries << QVariantMap{{QStringLiteral("fileUrl"), QUrl::fromLocalFile(path).toString()}};
+        entries << QVariantMap{{QStringLiteral("text"), QStringLiteral("draft text")},
+                               {QStringLiteral("modified"), true}};
+        store.saveSessionTabs(entries, 1);
+
+        const QVariantList restored = store.restoreSessionTabs();
+        QCOMPARE(restored.size(), 2);
+        QCOMPARE(restored.at(0).toMap().value(QStringLiteral("fileUrl")).toString(),
+                 QUrl::fromLocalFile(path).toString());
+        QVERIFY(!restored.at(0).toMap().contains(QStringLiteral("text")));
+        QCOMPARE(restored.at(1).toMap().value(QStringLiteral("text")).toString(),
+                 QStringLiteral("draft text"));
+        QCOMPARE(store.restoreSessionActiveIndex(), 1);
+    }
+
+    void savedCleanTabsPersistAsFileReferences() {
+        QTemporaryDir files;
+        QVERIFY(files.isValid());
+        const QString path = files.filePath(QStringLiteral("saved-clean.md"));
+
+        Backend document;
+        document.saveAs(QUrl::fromLocalFile(path));
+        const QVariantMap entry = document.sessionEntry();
+        QCOMPARE(entry.value(QStringLiteral("fileUrl")).toString(),
+                 QUrl::fromLocalFile(path).toString());
+        QVERIFY(!entry.contains(QStringLiteral("text")));
+    }
+
+    void qmlFlushesMultipleEditedTabs() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        engine.rootContext()->setContextProperty(QStringLiteral("initialSessionTabs"), QVariantList());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialOpenUrl"), QUrl());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialActiveTabIndex"), 0);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = nullptr;
+        QTRY_VERIFY(editor = window->property("activeEditor").value<QObject *>());
+        editor->setProperty("text", QStringLiteral("tab one"));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("tab one"));
+        QObject *firstEditor = editor;
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "createTab", Q_ARG(QVariant, QVariant())));
+        QTRY_COMPARE(window->property("currentTabIndex").toInt(), 1);
+        QTRY_VERIFY((editor = window->property("activeEditor").value<QObject *>()) && editor != firstEditor);
+        editor->setProperty("text", QStringLiteral("tab two"));
+        QObject *secondEditor = editor;
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "createTab", Q_ARG(QVariant, QVariant())));
+        QTRY_COMPARE(window->property("currentTabIndex").toInt(), 2);
+        QTRY_VERIFY((editor = window->property("activeEditor").value<QObject *>()) && editor != secondEditor);
+        editor->setProperty("text", QStringLiteral("tab three"));
+        QVariant entriesVariant;
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "sessionEntries",
+                                          Q_RETURN_ARG(QVariant, entriesVariant)));
+        const QVariantList entries = entriesVariant.toList();
+        QCOMPARE(entries.size(), 3);
+        QCOMPARE(entries.at(0).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("tab one"));
+        QCOMPARE(entries.at(1).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("tab two"));
+        QCOMPARE(entries.at(2).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("tab three"));
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "flushTabs"));
+
+        const QVariantList restored = backend.restoreSessionTabs();
+        QCOMPARE(restored.size(), 3);
+        QCOMPARE(restored.at(0).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("tab one"));
+        QCOMPARE(restored.at(1).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("tab two"));
+        QCOMPARE(restored.at(2).toMap().value(QStringLiteral("text")).toString(), QStringLiteral("tab three"));
+    }
+
+    void qmlFlushesEditedTabSession() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        engine.rootContext()->setContextProperty(QStringLiteral("initialSessionTabs"), QVariantList());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialOpenUrl"), QUrl());
+        engine.rootContext()->setContextProperty(QStringLiteral("initialActiveTabIndex"), 0);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = nullptr;
+        QTRY_VERIFY(editor = window->property("activeEditor").value<QObject *>());
+        editor->setProperty("text", QStringLiteral("unsaved session text"));
+        QVERIFY(QMetaObject::invokeMethod(window.data(), "flushTabs"));
+
+        const QVariantList restored = backend.restoreSessionTabs();
+        QCOMPARE(restored.size(), 1);
+        QCOMPARE(restored.at(0).toMap().value(QStringLiteral("text")).toString(),
+                 QStringLiteral("unsaved session text"));
     }
 
     void remembersLastSaveDirectory() {
@@ -248,6 +374,7 @@ private slots:
 
 private:
     QTemporaryDir m_settingsDirectory;
+    QTemporaryDir m_dataDirectory;
 };
 
 QTEST_MAIN(OmawriteTest)

@@ -4,6 +4,7 @@
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <qqml.h>
 #include <QQmlError>
 #include <QQuickStyle>
 #include <QUrl>
@@ -54,6 +55,8 @@ int main(int argc, char *argv[]) {
         backend.setTextScale(textScale);
     });
 
+    qmlRegisterType<Backend>("Omawrite", 1, 0, "DocumentBackend");
+
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::warnings, &app,
                      [](const QList<QQmlError> &warnings) {
@@ -61,6 +64,13 @@ int main(int argc, char *argv[]) {
             qWarning().noquote() << warning.toString();
     });
     engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+    const QStringList args = app.arguments();
+    engine.rootContext()->setContextProperty(QStringLiteral("initialSessionTabs"),
+                                             backend.restoreSessionTabs());
+    engine.rootContext()->setContextProperty(QStringLiteral("initialOpenUrl"),
+                                             args.size() > 1 ? QUrl::fromLocalFile(args.at(1)) : QUrl());
+    engine.rootContext()->setContextProperty(QStringLiteral("initialActiveTabIndex"),
+                                             backend.restoreSessionActiveIndex());
 
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
@@ -69,11 +79,11 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    backend.setParentWindow(qobject_cast<QWindow *>(engine.rootObjects().constFirst()));
-
-    const QStringList args = app.arguments();
-    if (args.size() > 1 && !backend.modified())
-        backend.open(QUrl::fromLocalFile(args.at(1)));
+    QObject *rootObject = engine.rootObjects().constFirst();
+    backend.setParentWindow(qobject_cast<QWindow *>(rootObject));
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, rootObject, [rootObject]() {
+        QMetaObject::invokeMethod(rootObject, "flushTabs");
+    });
 
     return app.exec();
 }

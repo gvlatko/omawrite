@@ -16,6 +16,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLockFile>
@@ -35,6 +36,7 @@
 
 constexpr qreal typoraLineHeightPercent = 140;
 const QString lastSaveDirectorySetting = QStringLiteral("file/lastSaveDirectory");
+const QString sessionFileName = QStringLiteral("session.json");
 
 QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     QString candidate = clipboardText.trimmed();
@@ -191,7 +193,6 @@ void Backend::attachDocument(QObject *textDocument) {
             });
 
     applyDocumentTypography();
-    restoreRecovery();
 }
 
 void Backend::openDialog() {
@@ -213,7 +214,6 @@ void Backend::open(const QUrl &url) {
 
     const QByteArray contents = file.readAll();
     loadDocumentText(QString::fromUtf8(contents));
-    clearRecovery();
     m_lastKnownFileContents = contents;
     m_hasKnownFileContents = true;
     setFileUrl(url);
@@ -255,6 +255,114 @@ void Backend::fileDialogCanceled() {
 
 void Backend::discardRecovery() {
     clearRecovery();
+}
+
+bool Backend::isEmptyUntitled() const {
+    return (!m_fileUrl.isValid() || m_fileUrl.isEmpty())
+        && !m_modified
+        && currentDocumentText().isEmpty();
+}
+
+QString Backend::documentText() const {
+    return m_sessionText;
+}
+
+void Backend::updateSessionText(const QString &text) {
+    m_sessionText = text;
+}
+
+QVariantMap Backend::sessionEntry() const {
+    return sessionEntryForText(m_sessionText);
+}
+
+QVariantMap Backend::sessionEntryForText(const QString &text) const {
+    if ((!m_fileUrl.isValid() || m_fileUrl.isEmpty()) && text.isEmpty())
+        return {{QStringLiteral("empty"), true}};
+
+    QVariantMap entry;
+    if (m_fileUrl.isValid() && !m_fileUrl.isEmpty())
+        entry.insert(QStringLiteral("fileUrl"), m_fileUrl.toString());
+
+    if (m_modified || !m_fileUrl.isValid() || m_fileUrl.isEmpty()) {
+        entry.insert(QStringLiteral("text"), text);
+        entry.insert(QStringLiteral("modified"), m_modified);
+    }
+    return entry;
+}
+
+void Backend::restoreSessionEntry(const QVariantMap &entry) {
+    const QUrl url(entry.value(QStringLiteral("fileUrl")).toString());
+    if (entry.contains(QStringLiteral("text"))) {
+        loadDocumentText(entry.value(QStringLiteral("text")).toString());
+        if (url.isValid() && !url.isEmpty()) {
+            setFileUrl(url);
+            QFile diskFile(url.toLocalFile());
+            if (url.isLocalFile() && diskFile.open(QIODevice::ReadOnly)) {
+                m_lastKnownFileContents = diskFile.readAll();
+                m_hasKnownFileContents = true;
+                watchCurrentFile();
+            }
+        }
+        setModified(entry.contains(QStringLiteral("modified"))
+                    ? entry.value(QStringLiteral("modified")).toBool()
+                    : true);
+        setStatus(m_modified ? QStringLiteral("Restored unsaved changes")
+                             : QStringLiteral("Restored draft"));
+    } else if (url.isValid() && !url.isEmpty()) {
+        open(url);
+    }
+}
+
+QVariantList Backend::restoreSessionTabs() const {
+    QVariantList tabs;
+    const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+        .filePath(sessionFileName);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return tabs;
+
+    const QJsonDocument json = QJsonDocument::fromJson(file.readAll());
+    if (!json.isObject())
+        return tabs;
+    const QJsonArray array = json.object().value(QStringLiteral("tabs")).toArray();
+    for (const QJsonValue &value : array) {
+        if (value.isObject())
+            tabs.append(value.toObject().toVariantMap());
+    }
+    return tabs;
+}
+
+int Backend::restoreSessionActiveIndex() const {
+    const QString path = QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+        .filePath(sessionFileName);
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return 0;
+
+    const QJsonDocument json = QJsonDocument::fromJson(file.readAll());
+    if (!json.isObject())
+        return 0;
+    return json.object().value(QStringLiteral("activeIndex")).toInt(0);
+}
+
+void Backend::saveSessionTabs(const QVariantList &entries, int activeIndex) {
+    QJsonArray tabs;
+    for (const QVariant &variant : entries) {
+        const QVariantMap entry = variant.toMap();
+        if (entry.value(QStringLiteral("empty")).toBool())
+            continue;
+        tabs.append(QJsonObject::fromVariantMap(entry));
+    }
+
+    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(directory);
+    QSaveFile file(QDir(directory).filePath(sessionFileName));
+    if (!file.open(QIODevice::WriteOnly))
+        return;
+    const QJsonObject session{{QStringLiteral("activeIndex"), activeIndex},
+                              {QStringLiteral("tabs"), tabs}};
+    file.write(QJsonDocument(session).toJson(QJsonDocument::Compact));
+    file.commit();
 }
 
 void Backend::reloadFromDisk() {
@@ -343,6 +451,7 @@ bool Backend::editorTextChanged() {
         return false;
 
     const QString text = currentDocumentText();
+    m_sessionText = text;
     if (text == m_lastDocumentText)
         return false;
     m_lastDocumentText = text;
@@ -431,6 +540,7 @@ void Backend::loadDocumentText(const QString &text) {
     m_loading = true;
     m_document->setPlainText(text);
     m_lastDocumentText = text;
+    m_sessionText = text;
     m_loading = false;
 
     applyDocumentTypography();
@@ -514,7 +624,9 @@ void Backend::saveTo(const QUrl &url) {
 }
 
 void Backend::scheduleRecovery() {
-    m_recoveryTimer.start();
+    // Tab/session persistence is managed by Main.qml through saveSessionTabs().
+    // Keep this hook so document-editing code does not need to know how the
+    // session is stored, but avoid maintaining a second recovery format.
 }
 
 QString Backend::recoveryPath() const {
@@ -522,8 +634,12 @@ QString Backend::recoveryPath() const {
 }
 
 void Backend::writeRecovery() {
-    if (!m_modified)
+    const QString text = m_sessionText;
+    if ((!m_modified && m_fileUrl.isValid() && !m_fileUrl.isEmpty())
+            || (!m_modified && !m_fileUrl.isValid() && text.isEmpty())) {
+        clearRecovery();
         return;
+    }
     const QString path = recoveryPath();
     if (path.isEmpty())
         return;
@@ -532,7 +648,8 @@ void Backend::writeRecovery() {
     if (!file.open(QIODevice::WriteOnly))
         return;
     const QJsonObject recovery{{QStringLiteral("fileUrl"), m_fileUrl.toString()},
-                               {QStringLiteral("text"), currentDocumentText()}};
+                               {QStringLiteral("modified"), m_modified},
+                               {QStringLiteral("text"), text}};
     file.write(QJsonDocument(recovery).toJson(QJsonDocument::Compact));
     file.commit();
 }
@@ -556,8 +673,9 @@ void Backend::restoreRecovery() {
         m_hasKnownFileContents = false;
     }
     setFileUrl(recoveredUrl);
-    setModified(true);
-    setStatus(QStringLiteral("Recovered unsaved changes"));
+    setModified(recovery.value(QStringLiteral("modified")).toBool(true));
+    setStatus(m_modified ? QStringLiteral("Recovered unsaved changes")
+                         : QStringLiteral("Restored %1").arg(fileName()));
 }
 
 void Backend::clearRecovery() {
