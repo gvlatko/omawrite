@@ -1,5 +1,7 @@
 This is a fork of Omawrite which adds tabs to the editor.
 
+--- Vibed the tabs features, i just skimmed through the changes, so no guaranties ---
+
 # Omawrite
 
 A dead-simple Markdown writing app built with Qt Quick and C++ that automatically follows system dark/light mode.
